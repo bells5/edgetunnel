@@ -420,6 +420,8 @@ prepare_data(){
   elif ! grep '"' $PROXYS_JSON; then
     ret=`curl -H "$AUTH" "$CF_KV_API/proxys"`
     grep error <<< "$ret" && echo "$ret" >> $GITHUB_STEP_SUMMARY && exit 1 || echo "$ret" > $PROXYS_JSON
+  elif ! orig_owner && [ "$shouldDeploy" = true ]; then
+    curl -X PUT -H "$AUTH" -d "@$PROXYS_JSON" "$CF_KV_API/proxys"
   fi
 }
 check_status(){
