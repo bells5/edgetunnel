@@ -288,6 +288,7 @@ async function vOverWSHandler(request) {
     )
     .catch(err => {
       log("readableWebSocketStream pipeTo error", err);
+      safeCloseWebSocket(remoteSocketWapper.value);
     });
 
   return new Response(null, {
@@ -382,7 +383,7 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
     // when remoteSocket is ready, pass to websocket. remote--> ws
     if (!(await remoteSocketToWS(tcpSocket, webSocket, vResponseHeader, log))) {
       retry(); // r: false|undefined|0
-      r === false && cf.tagCfhost(addressRemote);
+      r === false && cf.KV && cf.tagCfhost(addressRemote);
     }
   }
 }

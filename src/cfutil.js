@@ -131,13 +131,14 @@ export default class CF {
     const i = this.proxys[key].indexOf(host);
     if (i > -1) {
       this.proxys[key].splice(i, 1);
-      this.KV.put(this.KEY_PROXYS, this.proxys)
+      this.KV?.put(this.KEY_PROXYS, this.proxys)
         .then(r => console.log(`proxy ${host}(${key}) deleted from KV`))
         .catch(console.error);
       this.initProxy(key);
     }
   }
   async tagCfhost(host) {
+    if (!this.KV) return;
     const key = this.KEY_CFHOST;
     await this.loadCfhost();
     if (this[key].has(host)) return; // already cached locally

@@ -49,9 +49,10 @@ filterhost() {
 }
 
 check_secrets() {
-  if [ -z $CF_ACCOUNT_ID ] || [ -z $CF_API_TOKEN ] || [ -z $CF_NAMESPACE_ID ]; then
-    echo "CF_ACCOUNT_ID, CF_API_TOKEN and CF_NAMESPACE_ID is required!" | tee $GITHUB_STEP_SUMMARY && exit 1; 
+  if [ -z $CF_ACCOUNT_ID ] || [ -z $CF_API_TOKEN ]; then
+    echo "CF_ACCOUNT_ID, CF_API_TOKEN is required!" | tee $GITHUB_STEP_SUMMARY && exit 1; 
   fi
+  [ -n $CF_NAMESPACE_ID ] || echo "WARNING: CF_NAMESPACE_ID is empty!" | tee $GITHUB_STEP_SUMMARY
 }
 # ip workflow
 get(){
@@ -79,15 +80,17 @@ down_ip() {
   [ -s all.txt ] || (echo "Failed to download ip data!" && exit 1);
 }
 merge_ip(){
-  for key in $PROXYS_BAK $PROXYS; do
-    local ret=`curl -H "$AUTH" "$CF_KV_API/$key"`
-    if echo "$ret"|grep -qE 'success": ?false'; then
-      grep 'namespace not found' <<< "$ret" && exit 1 || echo "$ret"
-    elif [ ! -z "$ret" ] && ! grep -e '443":\s*\[\]' <<< "$ret"; then
-      echo "$ret" |tr -d '{ "[]}'|sed -r 's/\w+://g' |tr -s ',' '\n' >> ip.txt
-      break;
-    fi
-  done
+  if [ ! -z $CF_NAMESPACE_ID ]; then
+    for key in $PROXYS_BAK $PROXYS; do
+      local ret=`curl -H "$AUTH" "$CF_KV_API/$key"`
+      if echo "$ret"|grep -qE 'success": ?false'; then
+        grep 'namespace not found' <<< "$ret" && exit 1 || echo "$ret"
+      elif [ ! -z "$ret" ] && ! grep -e '443":\s*\[\]' <<< "$ret"; then
+        echo "$ret" |tr -d '{ "[]}'|sed -r 's/\w+://g' |tr -s ',' '\n' >> ip.txt
+        break;
+      fi
+    done
+  fi
   cat $PROXYS_JSON|tr -d '{ "[]}'|sed -r 's/\w+://g' |tr -s ',' '\n' >> ip.txt
   cat ip.txt | sed '/^$/d' | sort | uniq > tmp.txt && mv tmp.txt ip.txt
   echo merge `wc -l ip.txt` | tee $GITHUB_STEP_SUMMARY
@@ -294,9 +297,11 @@ put_ip() {
     fi
   done
   data={$data}
-  curl -X PUT -H "$AUTH" -d "@ip443.json" "$CF_KV_API/$PROXYS_BAK"
-  curl -X PUT -H "$AUTH" -d "$data" "$CF_KV_API/$PROXYS"
-  curl -X PUT -H "$AUTH" -d `date '+%F %T %Z%z'` "$CF_KV_API/$PROXYS_UPDATED"
+  if [ ! -z $CF_NAMESPACE_ID ]; then
+    curl -X PUT -H "$AUTH" -d "@ip443.json" "$CF_KV_API/$PROXYS_BAK"
+    curl -X PUT -H "$AUTH" -d "$data" "$CF_KV_API/$PROXYS"
+    curl -X PUT -H "$AUTH" -d `date '+%F %T %Z%z'` "$CF_KV_API/$PROXYS_UPDATED"
+  fi
   # echo "data=$data" >> $GITHUB_OUTPUT
 
   echo $data > $PROXYS_JSON
@@ -312,20 +317,28 @@ put_ip() {
 }
 
 # cfhost workflow
+diff_cfhostpat() {
+  [ ! -s "$1" ] && echo file $1 is empty! >&2 && return
+  local pat='^((xn--)?[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?\.){1,3}[a-z]{2,}$'
+  local cfpat=`node $FILTERHOST cfhostRE|sed -r 's|^/(.*)/$|\1|'`
+  while read -r d; do
+    ([[ ! $d =~ $pat ]] || [[ $d =~ $cfpat ]]) && sed -i '/'$d'/d' "$1" && echo delete $d from "$1"
+  done < "$1"
+  echo "diff cfhostpat, `wc -l $1`" >> $GITHUB_STEP_SUMMARY
+}
 check_cfhost() {
   check_secrets
+  git pull --rebase
   json_array_tolines $CFHOST_JSON > local.txt
   echo "$CFHOST_JSON - `wc -l local.txt`" >> $GITHUB_STEP_SUMMARY
-  git pull --rebase
   if orig_owner && week_plan; then
     echo check $CFHOSTPAT_JSON ...
     node $FILTERHOST toLines > pat.txt
-    cat pat.txt
     filterhost pat.txt handlePat
-    cat $CFHOSTPAT_JSON
 
     if [ -s local.txt ]; then
       echo check $CFHOST_JSON ...
+      diff_cfhostpat local.txt
       filterhost local.txt handleLine > tmp
       [ ! -s tmp ] && echo 'maybe filterhost error!' && exit 1
       file_lines_tojson tmp > $CFHOST_JSON
@@ -333,7 +346,7 @@ check_cfhost() {
       echo "filter, `wc -l local.txt`" >> $GITHUB_STEP_SUMMARY
     fi
   fi
-  
+  [ -z $CF_NAMESPACE_ID ] && exit 0;
   local ret=`curl -H "$AUTH" "$CF_KV_API/$CFHOST"`
   if echo "$ret"|grep -qE 'success": ?false'; then
     grep 'namespace not found' <<< "$ret" && exit 1 || echo "$ret"
@@ -355,13 +368,7 @@ check_cfhost() {
     comm -23 <(sort remote.txt) <(sort local.txt) > tmp && mv tmp remote.txt
     # diff after manually update cfhostpat.json
     echo "check kv cfhost ..."
-    local pat='^((xn--)?[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?\.){1,3}[a-z]{2,}$'
-    local cfpat=`node $FILTERHOST cfhostRE|sed -r 's|^/(.*)/$|\1|'`
-    while read -r d; do
-      ([[ ! $d =~ $pat ]] || [[ $d =~ $cfpat ]]) && sed -i '/'$d'/d' remote.txt && echo delete $d from remote.txt
-    done < remote.txt
-    echo "diff local, `wc -l remote.txt`" >> $GITHUB_STEP_SUMMARY
-    
+    diff_cfhostpat remote.txt
     if [ -s remote.txt ]; then
       filterhost remote.txt handleLine > tmp && mv tmp remote.txt
       echo "filter, `wc -l remote.txt`" >> $GITHUB_STEP_SUMMARY
@@ -419,11 +426,13 @@ prepare_data(){
   file_lines_tojson -u remote.txt local.txt > $CFHOST_JSON
   if [ ! -z "$proxys" ]; then
     echo $proxys > $PROXYS_JSON
-  elif ! grep '"' $PROXYS_JSON; then
-    ret=`curl -H "$AUTH" "$CF_KV_API/proxys"`
-    grep error <<< "$ret" && echo "$ret" >> $GITHUB_STEP_SUMMARY && exit 1 || echo "$ret" > $PROXYS_JSON
-  elif ! orig_owner && [ "$shouldDeploy" = true ]; then
-    curl -X PUT -H "$AUTH" -d "@$PROXYS_JSON" "$CF_KV_API/proxys"
+  elif [ ! -z $CF_NAMESPACE_ID ]; then
+    if ! grep '"' $PROXYS_JSON; then
+      ret=`curl -H "$AUTH" "$CF_KV_API/proxys"`
+      grep error <<< "$ret" && echo "$ret" >> $GITHUB_STEP_SUMMARY && exit 1 || echo "$ret" > $PROXYS_JSON
+    elif ! orig_owner && [ "$shouldDeploy" = true ]; then
+      curl -X PUT -H "$AUTH" -d "@$PROXYS_JSON" "$CF_KV_API/proxys"
+    fi
   fi
 }
 check_status(){

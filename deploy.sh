@@ -62,10 +62,14 @@ patch_page(){
 }
 #-------------------
 generate_bindings(){
-	echo '{"type":"plain_text","name":"'$UUID'","text":"'$1'"},{"type":"kv_namespace","name":"'$KV'","namespace_id":"'$CF_NAMESPACE_ID'"}'
+	local bindings='{"type":"plain_text","name":"'$UUID'","text":"'$1'"}'
+	[ ! -z $CF_NAMESPACE_ID ] && bindings+=',{"type":"kv_namespace","name":"'$KV'","namespace_id":"'$CF_NAMESPACE_ID'"}'
+	echo $bindings
 }
 generate_configs(){
-	echo '"env_vars":{"'$UUID'":{"type":"plain_text","value":"'$1'"}},"kv_namespaces":{"'$KV'":{"namespace_id":"'$CF_NAMESPACE_ID'"}}'
+	local configs=='"env_vars":{"'$UUID'":{"type":"plain_text","value":"'$1'"}}'
+	[ ! -z $CF_NAMESPACE_ID ] && configs+=',"kv_namespaces":{"'$KV'":{"namespace_id":"'$CF_NAMESPACE_ID'"}}'
+	echo $configs
 }
 post_handle(){
 	# grep -qE 'success": ?false'<<< "$1" && echo $ret >&2 && return 1 || echo "$2 success" >> $GITHUB_STEP_SUMMARY
@@ -95,7 +99,7 @@ deploy_worker(){
 		compatDate=`jq -r '.result.compatibility_date' <<< $ret`
 		[ "$uuid" = null ] && uuid=
 		[ -z $uuid ] && warn_no_uuid WORKER $1
-		if [ -z $nsid ] || [ $nsid != $CF_NAMESPACE_ID ] || [ -z $compatDate ]; then
+		if [ -z $nsid ] || [ "$nsid" != "$CF_NAMESPACE_ID" ] || [ -z $compatDate ]; then
 			bindings=`generate_bindings $uuid`
 			ret=`patch_worker_settings $1 $bindings`
 			post_handle "$ret" 'patch_worker_settings' || exit 1
@@ -122,7 +126,7 @@ deploy_page(){
 		[ "$uuid" = null ] && uuid=
 		if [ ! -z $2 ] && [ "$uuid" != "$2" ]; then
 			configs=`generate_configs $2`
-		elif [ -z $nsid ] || [ $nsid != $CF_NAMESPACE_ID ]; then
+		elif [ -z $nsid ] || [ "$nsid" != "$CF_NAMESPACE_ID" ]; then
 			configs=`generate_configs $uuid`
 		elif [ -z $uuid ]; then
 			warn_no_uuid PAGE $n
@@ -148,14 +152,14 @@ deploy_page(){
 }
 
 deploy(){
-	local names=(`echo "$1" | tr -s ' ' '\n'|head -n 20`)
-	local uuids=(`echo "$2" | tr -s ' ' '\n'|head -n 20`)
+	local names=(`echo "$2" | tr -s ' ' '\n'|head -n 20`)
+	local uuids=(`echo "$3" | tr -s ' ' '\n'|head -n 20`)
 	local name uuid
 	for ((i=0; i<${#names[@]}; i++)); do
 		name=${names[$i]}
 		uuid=${uuids[$i]}
 		# echo "$n" | grep -P "$NAME_PAT"
-		[[ "$name" =~ $NAME_PAT ]] && $3 $name $uuid && sleep .5 || echo "invalid name: $name"
+		[[ "$name" =~ $NAME_PAT ]] && deploy_$3 $name $uuid && sleep .5 || echo "invalid name: $name"
 	done
 }
 
@@ -163,13 +167,13 @@ if [ -z "$workerName" ]; then
 	echo 'empty CF_WORKER_NAME'
 	noWorker=true 
 else
-	deploy "$workerName" "$CF_WORKER_UUID" deploy_worker
+	deploy worker "$workerName" "$CF_WORKER_UUID"
 fi
 if [ -z "$pageName" ]; then 
 	echo 'empty CF_PAGE_NAME' 
 	[ "$noWorker" = true ] && exit 1
 else
 	echo >> $GITHUB_STEP_SUMMARY
-	deploy "$pageName" "$CF_PAGE_UUID" deploy_page
+	deploy page "$pageName" "$CF_PAGE_UUID"
 fi
 echo "`date '+%Y-%m-%d %H:%M:%S %Z%z'` deploying success 🎉" >> $GITHUB_STEP_SUMMARY
